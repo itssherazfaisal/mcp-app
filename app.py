@@ -17,6 +17,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from tools import register_all_tools
 
 # Configure logging
 logging.basicConfig(
@@ -214,54 +215,6 @@ class MCPServer:
 # Create the MCP server instance
 mcp_server = MCPServer("ByteGenie", "1.0.0")
 
-# Example tool implementations
-def calculate_tool(args: Dict[str, Any]) -> str:
-    """Example calculator tool"""
-    try:
-        operation = args.get("operation", "add")
-        a = float(args.get("a", 0))
-        b = float(args.get("b", 0))
-        
-        if operation == "add":
-            result = a + b
-        elif operation == "subtract":
-            result = a - b
-        elif operation == "multiply":
-            result = a * b
-        elif operation == "divide":
-            if b == 0:
-                raise ValueError("Division by zero")
-            result = a / b
-        else:
-            raise ValueError(f"Unknown operation: {operation}")
-        
-        return f"Calculation: {a} {operation} {b} = {result}"
-    except Exception as e:
-        return f"Calculation error: {str(e)}"
-
-def current_time_tool(args: Dict[str, Any]) -> str:
-    """Get current time"""
-    try:
-        format_str = args.get("format", "%Y-%m-%d %H:%M:%S UTC")
-        return f"Current time: {datetime.now(timezone.utc).strftime(format_str)}"
-    except Exception as e:
-        return f"Time error: {str(e)}"
-
-def text_analyzer_tool(args: Dict[str, Any]) -> str:
-    """Analyze text properties"""
-    try:
-        text = args.get("text", "")
-        analysis = {
-            "length": len(text),
-            "words": len(text.split()),
-            "lines": len(text.split('\n')),
-            "characters_no_spaces": len(text.replace(' ', '')),
-            "sentences": len([s for s in text.split('.') if s.strip()]),
-            "paragraphs": len([p for p in text.split('\n\n') if p.strip()])
-        }
-        return f"Text Analysis:\n{json.dumps(analysis, indent=2)}"
-    except Exception as e:
-        return f"Analysis error: {str(e)}"
 
 # Example resource implementations
 def get_server_info() -> str:
@@ -282,64 +235,6 @@ def get_server_info() -> str:
     except Exception as e:
         return f"Server info error: {str(e)}"
 
-# Register tools with better schemas
-mcp_server.add_tool(
-    name="calculate",
-    description="Perform basic mathematical calculations (add, subtract, multiply, divide)",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "operation": {
-                "type": "string",
-                "enum": ["add", "subtract", "multiply", "divide"],
-                "description": "The mathematical operation to perform"
-            },
-            "a": {
-                "type": "number",
-                "description": "First number"
-            },
-            "b": {
-                "type": "number", 
-                "description": "Second number"
-            }
-        },
-        "required": ["operation", "a", "b"]
-    },
-    handler=calculate_tool
-)
-
-mcp_server.add_tool(
-    name="current_time",
-    description="Get the current date and time in UTC",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "format": {
-                "type": "string",
-                "description": "Time format string (default: %Y-%m-%d %H:%M:%S UTC)",
-                "default": "%Y-%m-%d %H:%M:%S UTC"
-            }
-        }
-    },
-    handler=current_time_tool
-)
-
-mcp_server.add_tool(
-    name="analyze_text",
-    description="Analyze text and return detailed statistics including length, words, lines, sentences, and paragraphs",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "text": {
-                "type": "string",
-                "description": "Text to analyze"
-            }
-        },
-        "required": ["text"]
-    },
-    handler=text_analyzer_tool
-)
-
 # Register resources
 mcp_server.add_resource(
     uri="server://info",
@@ -348,6 +243,7 @@ mcp_server.add_resource(
     mime_type="application/json",
     handler=get_server_info
 )
+register_all_tools(mcp_server)
 
 # FastAPI app
 app = FastAPI(
