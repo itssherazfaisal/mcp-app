@@ -2,6 +2,7 @@
 """
 A Python MCP (Model Context Protocol) Server implementation.
 This server provides tools that can be called by OpenAI's models.
+Fixed for proper JSON-RPC 2.0 compliance.
 """
 
 import json
@@ -39,11 +40,13 @@ class Resource:
     mimeType: Optional[str] = None
 
 class MCPRequest(BaseModel):
+    jsonrpc: str = "2.0"
     method: str
     params: Optional[Dict[str, Any]] = None
     id: Optional[Union[str, int]] = None
 
 class MCPResponse(BaseModel):
+    jsonrpc: str = "2.0"
     result: Optional[Dict[str, Any]] = None
     error: Optional[Dict[str, Any]] = None
     id: Optional[Union[str, int]] = None
@@ -64,6 +67,7 @@ class MCPServer:
         self.resource_handlers: Dict[str, callable] = {}
         self.start_time = datetime.now(timezone.utc)
         logger.info(f"Initialized MCP Server: {name} v{version}")
+    
     def add_tool(self, name: str, description: str, input_schema: Dict[str, Any], handler: callable):
         """Add a tool to the MCP server"""
         tool = Tool(name=name, description=description, inputSchema=input_schema)
@@ -78,207 +82,210 @@ class MCPServer:
         self.resource_handlers[uri] = handler
         logger.info(f"Added resource: {uri}")
     
-    async def handle_request(self, request: MCPRequest) -> MCPResponse:
-        """Handle incoming MCP requests"""
+    async def handle_request(self, request: MCPRequest) -> Dict[str, Any]:
+        """Handle incoming MCP requests and return JSON-RPC 2.0 compliant response"""
         start_time = datetime.now()
-        logger.info(f"Handling MCP request: {request.method}")
+        logger.info(f"Handling MCP request: {request.method} (ID: {request.id})")
         
         try:
             if request.method == "initialize":
-                return await self._handle_initialize(request)
+                result = await self._handle_initialize(request)
             elif request.method == "tools/list":
-                return await self._handle_tools_list(request)
+                result = await self._handle_tools_list(request)
             elif request.method == "tools/call":
-                return await self._handle_tools_call(request)
+                result = await self._handle_tools_call(request)
             elif request.method == "resources/list":
-                return await self._handle_resources_list(request)
+                result = await self._handle_resources_list(request)
             elif request.method == "resources/read":
-                return await self._handle_resources_read(request)
+                result = await self._handle_resources_read(request)
             else:
                 logger.warning(f"Unknown method: {request.method}")
-                return MCPResponse(
-                    error={"code": -32601, "message": f"Method not found: {request.method}"},
-                    id=request.id
-                )
+                return {
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": -32601,
+                        "message": f"Method not found: {request.method}"
+                    },
+                    "id": request.id
+                }
+            
+            response = {
+                "jsonrpc": "2.0",
+                "result": result,
+                "id": request.id
+            }
+            
+            duration = (datetime.now() - start_time).total_seconds() * 1000
+            logger.info(f"Request {request.method} completed successfully in {duration:.2f}ms")
+            return response
+            
         except Exception as e:
             logger.error(f"Error handling request {request.method}: {str(e)}", exc_info=True)
-            return MCPResponse(
-                error={"code": -32603, "message": f"Internal error: {str(e)}"},
-                id=request.id
-            )
-        finally:
-            duration = (datetime.now() - start_time).total_seconds() * 1000
-            logger.info(f"Request {request.method} completed in {duration:.2f}ms")
-    
-    async def _handle_initialize(self, request: MCPRequest) -> MCPResponse:
-        """Handle initialization request"""
-        return MCPResponse(
-            result={
-                "protocolVersion": "2024-11-05",
-                "capabilities": {
-                    "tools": {"listChanged": True},
-                    "resources": {"subscribe": True, "listChanged": True}
+            return {
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32603,
+                    "message": f"Internal error: {str(e)}"
                 },
-                "serverInfo": {
-                    "name": self.name,
-                    "version": self.version
-                }
+                "id": request.id
+            }
+    
+    async def _handle_initialize(self, request: MCPRequest) -> Dict[str, Any]:
+        """Handle initialization request"""
+        return {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {
+                "tools": {"listChanged": True},
+                "resources": {"subscribe": True, "listChanged": True}
             },
-            id=request.id
-        )
+            "serverInfo": {
+                "name": self.name,
+                "version": self.version
+            }
+        }
     
-    async def _handle_tools_list(self, request: MCPRequest) -> MCPResponse:
+    async def _handle_tools_list(self, request: MCPRequest) -> Dict[str, Any]:
         """Handle tools list request"""
-        tools_list = [asdict(tool) for tool in self.tools.values()]
-        return MCPResponse(
-            result={"tools": tools_list},
-            id=request.id
-        )
+        tools_list = []
+        for tool in self.tools.values():
+            tool_dict = asdict(tool)
+            tools_list.append(tool_dict)
+        
+        logger.info(f"Returning {len(tools_list)} tools")
+        return {"tools": tools_list}
     
-    async def _handle_tools_call(self, request: MCPRequest) -> MCPResponse:
+    async def _handle_tools_call(self, request: MCPRequest) -> Dict[str, Any]:
         """Handle tool call request"""
         if not request.params or "name" not in request.params:
-            return MCPResponse(
-                error={"code": -32602, "message": "Missing tool name"},
-                id=request.id
-            )
+            raise ValueError("Missing tool name in request")
         
         tool_name = request.params["name"]
         arguments = request.params.get("arguments", {})
         
         if tool_name not in self.tool_handlers:
-            return MCPResponse(
-                error={"code": -32601, "message": f"Tool not found: {tool_name}"},
-                id=request.id
-            )
+            raise ValueError(f"Tool not found: {tool_name}")
         
         try:
             handler = self.tool_handlers[tool_name]
             result = await handler(arguments) if asyncio.iscoroutinefunction(handler) else handler(arguments)
             
-            return MCPResponse(
-                result={
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": str(result)
-                        }
-                    ]
-                },
-                id=request.id
-            )
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": str(result)
+                    }
+                ]
+            }
         except Exception as e:
-            return MCPResponse(
-                error={"code": -32603, "message": f"Tool execution failed: {str(e)}"},
-                id=request.id
-            )
+            raise ValueError(f"Tool execution failed: {str(e)}")
     
-    async def _handle_resources_list(self, request: MCPRequest) -> MCPResponse:
+    async def _handle_resources_list(self, request: MCPRequest) -> Dict[str, Any]:
         """Handle resources list request"""
         resources_list = [asdict(resource) for resource in self.resources.values()]
-        return MCPResponse(
-            result={"resources": resources_list},
-            id=request.id
-        )
+        return {"resources": resources_list}
     
-    async def _handle_resources_read(self, request: MCPRequest) -> MCPResponse:
+    async def _handle_resources_read(self, request: MCPRequest) -> Dict[str, Any]:
         """Handle resource read request"""
         if not request.params or "uri" not in request.params:
-            return MCPResponse(
-                error={"code": -32602, "message": "Missing resource URI"},
-                id=request.id
-            )
+            raise ValueError("Missing resource URI in request")
         
         uri = request.params["uri"]
         
         if uri not in self.resource_handlers:
-            return MCPResponse(
-                error={"code": -32601, "message": f"Resource not found: {uri}"},
-                id=request.id
-            )
+            raise ValueError(f"Resource not found: {uri}")
         
         try:
             handler = self.resource_handlers[uri]
             content = await handler() if asyncio.iscoroutinefunction(handler) else handler()
             
-            return MCPResponse(
-                result={
-                    "contents": [
-                        {
-                            "uri": uri,
-                            "mimeType": self.resources[uri].mimeType,
-                            "text": content
-                        }
-                    ]
-                },
-                id=request.id
-            )
+            return {
+                "contents": [
+                    {
+                        "uri": uri,
+                        "mimeType": self.resources[uri].mimeType,
+                        "text": content
+                    }
+                ]
+            }
         except Exception as e:
-            return MCPResponse(
-                error={"code": -32603, "message": f"Resource read failed: {str(e)}"},
-                id=request.id
-            )
+            raise ValueError(f"Resource read failed: {str(e)}")
 
 # Create the MCP server instance
-mcp_server = MCPServer("example-mcp-server", "1.0.0")
+mcp_server = MCPServer("ByteGenie", "1.0.0")
 
 # Example tool implementations
 def calculate_tool(args: Dict[str, Any]) -> str:
     """Example calculator tool"""
-    operation = args.get("operation", "add")
-    a = float(args.get("a", 0))
-    b = float(args.get("b", 0))
-    
-    if operation == "add":
-        result = a + b
-    elif operation == "subtract":
-        result = a - b
-    elif operation == "multiply":
-        result = a * b
-    elif operation == "divide":
-        if b == 0:
-            raise ValueError("Division by zero")
-        result = a / b
-    else:
-        raise ValueError(f"Unknown operation: {operation}")
-    
-    return f"Result: {result}"
+    try:
+        operation = args.get("operation", "add")
+        a = float(args.get("a", 0))
+        b = float(args.get("b", 0))
+        
+        if operation == "add":
+            result = a + b
+        elif operation == "subtract":
+            result = a - b
+        elif operation == "multiply":
+            result = a * b
+        elif operation == "divide":
+            if b == 0:
+                raise ValueError("Division by zero")
+            result = a / b
+        else:
+            raise ValueError(f"Unknown operation: {operation}")
+        
+        return f"Calculation: {a} {operation} {b} = {result}"
+    except Exception as e:
+        return f"Calculation error: {str(e)}"
 
 def current_time_tool(args: Dict[str, Any]) -> str:
     """Get current time"""
-    format_str = args.get("format", "%Y-%m-%d %H:%M:%S")
-    return datetime.now(timezone.utc).strftime(format_str)
+    try:
+        format_str = args.get("format", "%Y-%m-%d %H:%M:%S UTC")
+        return f"Current time: {datetime.now(timezone.utc).strftime(format_str)}"
+    except Exception as e:
+        return f"Time error: {str(e)}"
 
 def text_analyzer_tool(args: Dict[str, Any]) -> str:
     """Analyze text properties"""
-    text = args.get("text", "")
-    analysis = {
-        "length": len(text),
-        "words": len(text.split()),
-        "lines": len(text.split('\n')),
-        "characters_no_spaces": len(text.replace(' ', ''))
-    }
-    return json.dumps(analysis, indent=2)
+    try:
+        text = args.get("text", "")
+        analysis = {
+            "length": len(text),
+            "words": len(text.split()),
+            "lines": len(text.split('\n')),
+            "characters_no_spaces": len(text.replace(' ', '')),
+            "sentences": len([s for s in text.split('.') if s.strip()]),
+            "paragraphs": len([p for p in text.split('\n\n') if p.strip()])
+        }
+        return f"Text Analysis:\n{json.dumps(analysis, indent=2)}"
+    except Exception as e:
+        return f"Analysis error: {str(e)}"
 
 # Example resource implementations
 def get_server_info() -> str:
     """Get server information"""
-    uptime = datetime.now(timezone.utc) - mcp_server.start_time
-    info = {
-        "name": mcp_server.name,
-        "version": mcp_server.version,
-        "uptime_seconds": uptime.total_seconds(),
-        "uptime_human": str(uptime),
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "tools_count": len(mcp_server.tools),
-        "resources_count": len(mcp_server.resources)
-    }
-    return json.dumps(info, indent=2)
+    try:
+        uptime = datetime.now(timezone.utc) - mcp_server.start_time
+        info = {
+            "name": mcp_server.name,
+            "version": mcp_server.version,
+            "uptime_seconds": uptime.total_seconds(),
+            "uptime_human": str(uptime),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "tools_count": len(mcp_server.tools),
+            "resources_count": len(mcp_server.resources),
+            "available_tools": list(mcp_server.tools.keys())
+        }
+        return json.dumps(info, indent=2)
+    except Exception as e:
+        return f"Server info error: {str(e)}"
 
-# Register tools
+# Register tools with better schemas
 mcp_server.add_tool(
     name="calculate",
-    description="Perform basic mathematical calculations",
+    description="Perform basic mathematical calculations (add, subtract, multiply, divide)",
     input_schema={
         "type": "object",
         "properties": {
@@ -303,13 +310,14 @@ mcp_server.add_tool(
 
 mcp_server.add_tool(
     name="current_time",
-    description="Get the current date and time",
+    description="Get the current date and time in UTC",
     input_schema={
         "type": "object",
         "properties": {
             "format": {
                 "type": "string",
-                "description": "Time format string (default: %Y-%m-%d %H:%M:%S)"
+                "description": "Time format string (default: %Y-%m-%d %H:%M:%S UTC)",
+                "default": "%Y-%m-%d %H:%M:%S UTC"
             }
         }
     },
@@ -318,7 +326,7 @@ mcp_server.add_tool(
 
 mcp_server.add_tool(
     name="analyze_text",
-    description="Analyze text and return statistics",
+    description="Analyze text and return detailed statistics including length, words, lines, sentences, and paragraphs",
     input_schema={
         "type": "object",
         "properties": {
@@ -344,7 +352,7 @@ mcp_server.add_resource(
 # FastAPI app
 app = FastAPI(
     title="ByteGenie MCP Server", 
-    description="Model Context Protocol Server for ByteGenie",
+    description="Model Context Protocol Server for ByteGenie - JSON-RPC 2.0 Compliant",
     version=mcp_server.version
 )
 
@@ -359,33 +367,80 @@ app.add_middleware(
 
 @app.post("/mcp")
 async def mcp_endpoint(request: Request):
-    """Main MCP endpoint"""
+    """Main MCP endpoint - JSON-RPC 2.0 compliant"""
     start_time = datetime.now()
     client_ip = request.client.host if request.client else "unknown"
     
     try:
+        # Parse request body
         body = await request.json()
-        logger.info(f"MCP request from {client_ip}: {body.get('method', 'unknown')}")
+        logger.info(f"Raw MCP request from {client_ip}: {json.dumps(body, indent=2)}")
         
+        # Validate JSON-RPC 2.0 format
+        if "jsonrpc" not in body or body["jsonrpc"] != "2.0":
+            logger.error("Invalid JSON-RPC version")
+            return JSONResponse(
+                content={
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": -32600,
+                        "message": "Invalid Request - missing or invalid jsonrpc version"
+                    },
+                    "id": body.get("id")
+                },
+                status_code=400
+            )
+        
+        if "method" not in body:
+            logger.error("Missing method in request")
+            return JSONResponse(
+                content={
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": -32600,
+                        "message": "Invalid Request - missing method"
+                    },
+                    "id": body.get("id")
+                },
+                status_code=400
+            )
+        
+        # Create MCP request object
         mcp_request = MCPRequest(**body)
+        
+        # Handle the request
         response = await mcp_server.handle_request(mcp_request)
         
         # Log successful responses
         duration = (datetime.now() - start_time).total_seconds() * 1000
-        logger.info(f"MCP response sent in {duration:.2f}ms")
+        logger.info(f"MCP response sent in {duration:.2f}ms: {json.dumps(response, indent=2)}")
         
-        return JSONResponse(content=response.dict(exclude_none=True))
+        return JSONResponse(content=response)
         
     except json.JSONDecodeError as e:
         logger.error(f"JSON decode error from {client_ip}: {e}")
         return JSONResponse(
-            content={"error": {"code": -32700, "message": "Parse error"}},
+            content={
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32700,
+                    "message": "Parse error - Invalid JSON"
+                },
+                "id": None
+            },
             status_code=400
         )
     except Exception as e:
         logger.error(f"Error processing MCP request from {client_ip}: {e}", exc_info=True)
         return JSONResponse(
-            content={"error": {"code": -32603, "message": "Internal server error"}},
+            content={
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32603,
+                    "message": f"Internal server error: {str(e)}"
+                },
+                "id": body.get("id") if 'body' in locals() else None
+            },
             status_code=500
         )
 
@@ -396,16 +451,20 @@ async def root():
     return {
         "name": mcp_server.name,
         "version": mcp_server.version,
-        "protocol": "MCP",
+        "protocol": "MCP (Model Context Protocol)",
+        "jsonrpc": "2.0",
         "status": "running",
         "uptime_seconds": uptime.total_seconds(),
         "endpoints": {
             "mcp": "/mcp",
             "health": "/health",
-            "docs": "/docs"
+            "docs": "/docs",
+            "ping": "/ping"
         },
         "tools_available": len(mcp_server.tools),
-        "resources_available": len(mcp_server.resources)
+        "resources_available": len(mcp_server.resources),
+        "available_tools": list(mcp_server.tools.keys()),
+        "available_resources": list(mcp_server.resources.keys())
     }
 
 @app.get("/health")
@@ -419,11 +478,25 @@ async def health_check():
         version=mcp_server.version
     )
 
-# Add a simple ping endpoint for monitoring
 @app.get("/ping")
 async def ping():
-    """Simple ping endpoint"""
-    return {"status": "pong", "timestamp": datetime.now(timezone.utc).isoformat()}
+    """Simple ping endpoint for monitoring"""
+    return {
+        "status": "pong",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "server": mcp_server.name
+    }
+
+# Test endpoint to verify tools/list functionality
+@app.get("/test-tools")
+async def test_tools():
+    """Test endpoint to verify tools list"""
+    try:
+        fake_request = MCPRequest(method="tools/list", id="test")
+        response = await mcp_server.handle_request(fake_request)
+        return response
+    except Exception as e:
+        return {"error": str(e)}
 
 if __name__ == "__main__":
     # Get configuration from environment
@@ -434,10 +507,11 @@ if __name__ == "__main__":
     logger.info(f"Starting {mcp_server.name} v{mcp_server.version}")
     logger.info(f"Available tools: {list(mcp_server.tools.keys())}")
     logger.info(f"Available resources: {list(mcp_server.resources.keys())}")
+    logger.info(f"Server will listen on {host}:{port}")
     
     # Run the server
     uvicorn.run(
-        "app:app",  # Assuming this file is named main.py
+        app,
         host=host,
         port=port,
         log_level=log_level,
