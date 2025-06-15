@@ -143,7 +143,7 @@ def call_bytegenie_api(endpoint, args):
 def register_list_events_tool(mcp_server):
     def handler(args: Dict[str, Any]) -> Any:
         try:
-            return call_bytegenie_api(endpoint="list_events", args=args)
+            return call_bytegenie_api(endpoint="list_events", args={"event_attrs":args})
         except Exception as e:
             return {"error": str(e)}
 
