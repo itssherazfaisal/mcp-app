@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import json
 import inspect
 import sys
+import requests
 
 # Example tool implementations
 def calculate_tool(args: Dict[str, Any]) -> str:
@@ -118,6 +119,92 @@ def register_text_analyzer_tool(mcp_server):
     )
     return mcp_server
 
+def call_bytegenie_api(endpoint, args):
+    url = "https://api.byte-genie.com/execute"
+    payload = {
+        "api_key": "bg_b71a85f7-04e1-4fbe-97df-298f04ef5be5",
+        "tasks": {"task_1": {
+                "func": endpoint,
+                "args": args,
+                "username": "testing-genie",
+                "overwrite": 0,
+                "task_mode": "sync"
+            }}
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "insomnia/10.3.0"
+    }
+
+    response = requests.request("POST", url, json=payload, headers=headers)
+    return response.json()["response"]["task_1"]["data"]
+
+
+def register_list_events_tool(mcp_server):
+    def handler(args: Dict[str, Any]) -> Any:
+        try:
+            return call_bytegenie_api(endpoint="list_events", args=args)
+        except Exception as e:
+            return {"error": str(e)}
+
+    mcp_server.add_tool(
+        name="list_events",
+        description="Fetch a list of events filtered by date, city, country, or event name",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "event_min_date": {
+                    "type": "string",
+                    "description": "Minimum date for events (YYYY-MM-DD)",
+                },
+                "event_max_date": {
+                    "type": "string",
+                    "description": "Maximum date for events (YYYY-MM-DD)",
+                },
+                "event_city": {
+                    "type": "string",
+                    "description": "City where event is held",
+                },
+                "event_country_std": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of standardized country codes (e.g., ['USA', 'GBR'])",
+                },
+                "event_name": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of event names to search",
+                },
+            },
+            "required": []
+        },
+        handler=handler
+    )
+    return mcp_server
+
+def register_query_knowledge_graph_tool(mcp_server):
+    def handler(args: Dict[str, Any]) -> Any:
+        try:
+            return call_bytegenie_api(endpoint="query_knowledge_graph", args=args)
+        except Exception as e:
+            return {"error": str(e)}
+
+    mcp_server.add_tool(
+        name="query_knowledge_graph",
+        description="Searches the knowledge graph for entities based on a natural language query.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "prompt": {
+                    "type": "string",
+                    "description": "The search query.",
+                },
+            },
+            "required": ["prompt"]
+        },
+        handler=handler
+    )
+    return mcp_server
 
 
 def register_all_tools(mcp_server):
