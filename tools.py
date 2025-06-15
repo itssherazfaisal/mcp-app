@@ -137,7 +137,7 @@ def call_bytegenie_api(endpoint, args):
     }
 
     response = requests.request("POST", url, json=payload, headers=headers)
-    return f"Results:\n{json.dumps(response.json()["response"]["task_1"]["data"], indent=2)}"
+    return f'Results:\n{json.dumps(response.json()["response"]["task_1"]["data"], indent=2)}'
 
 
 # def register_list_events_tool(mcp_server):
