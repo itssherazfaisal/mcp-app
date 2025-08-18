@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 A Python MCP (Model Context Protocol) Server implementation.
-This server provides tools that can be called by OpenAI's models.
-Fixed for proper JSON-RPC 2.0 compliance.
+Fixed for Claude API compatibility and proper JSON-RPC 2.0 compliance.
 """
 
 import json
@@ -215,6 +214,103 @@ class MCPServer:
 # Create the MCP server instance
 mcp_server = MCPServer("ByteGenie", "1.0.0")
 
+mcp_server = register_all_tools(mcp_server)
+
+# # Example tool implementations
+# def example_calculator(args: Dict[str, Any]) -> str:
+#     """Example calculator tool"""
+#     try:
+#         operation = args.get('operation', 'add')
+#         a = float(args.get('a', 0))
+#         b = float(args.get('b', 0))
+        
+#         if operation == 'add':
+#             result = a + b
+#         elif operation == 'subtract':
+#             result = a - b
+#         elif operation == 'multiply':
+#             result = a * b
+#         elif operation == 'divide':
+#             if b == 0:
+#                 return "Error: Division by zero"
+#             result = a / b
+#         else:
+#             return f"Error: Unknown operation '{operation}'"
+        
+#         return f"Result: {a} {operation} {b} = {result}"
+#     except Exception as e:
+#         return f"Calculator error: {str(e)}"
+
+# def get_current_time(args: Dict[str, Any]) -> str:
+#     """Get current time tool"""
+#     try:
+#         timezone_str = args.get('timezone', 'UTC')
+#         now = datetime.now(timezone.utc)
+#         return f"Current time: {now.isoformat()}"
+#     except Exception as e:
+#         return f"Time error: {str(e)}"
+
+# def echo_tool(args: Dict[str, Any]) -> str:
+#     """Simple echo tool for testing"""
+#     message = args.get('message', 'Hello, World!')
+#     return f"Echo: {message}"
+
+# # Register example tools
+# mcp_server.add_tool(
+#     name="calculator",
+#     description="Perform basic arithmetic operations (add, subtract, multiply, divide)",
+#     input_schema={
+#         "type": "object",
+#         "properties": {
+#             "operation": {
+#                 "type": "string",
+#                 "enum": ["add", "subtract", "multiply", "divide"],
+#                 "description": "The arithmetic operation to perform"
+#             },
+#             "a": {
+#                 "type": "number",
+#                 "description": "First number"
+#             },
+#             "b": {
+#                 "type": "number", 
+#                 "description": "Second number"
+#             }
+#         },
+#         "required": ["operation", "a", "b"]
+#     },
+#     handler=example_calculator
+# )
+
+# mcp_server.add_tool(
+#     name="current_time",
+#     description="Get the current time",
+#     input_schema={
+#         "type": "object",
+#         "properties": {
+#             "timezone": {
+#                 "type": "string",
+#                 "description": "Timezone (default: UTC)"
+#             }
+#         }
+#     },
+#     handler=get_current_time
+# )
+
+# mcp_server.add_tool(
+#     name="echo",
+#     description="Echo back a message",
+#     input_schema={
+#         "type": "object",
+#         "properties": {
+#             "message": {
+#                 "type": "string",
+#                 "description": "Message to echo back"
+#             }
+#         },
+#         "required": ["message"]
+#     },
+#     handler=echo_tool
+# )
 
 # Example resource implementations
 def get_server_info() -> str:
@@ -235,6 +331,17 @@ def get_server_info() -> str:
     except Exception as e:
         return f"Server info error: {str(e)}"
 
+def get_sample_data() -> str:
+    """Get some sample data"""
+    data = {
+        "sample_users": [
+            {"id": 1, "name": "Alice", "email": "alice@example.com"},
+            {"id": 2, "name": "Bob", "email": "bob@example.com"}
+        ],
+        "generated_at": datetime.now(timezone.utc).isoformat()
+    }
+    return json.dumps(data, indent=2)
+
 # Register resources
 mcp_server.add_resource(
     uri="server://info",
@@ -243,7 +350,14 @@ mcp_server.add_resource(
     mime_type="application/json",
     handler=get_server_info
 )
-register_all_tools(mcp_server)
+
+mcp_server.add_resource(
+    uri="data://sample",
+    name="Sample Data",
+    description="Sample user data for testing",
+    mime_type="application/json",
+    handler=get_sample_data
+)
 
 # FastAPI app
 app = FastAPI(
@@ -260,6 +374,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.post("/")
+async def mcp_root_endpoint(request: Request):
+    """Root MCP endpoint - JSON-RPC 2.0 compliant"""
+    return await mcp_endpoint(request)
 
 @app.post("/mcp")
 async def mcp_endpoint(request: Request):
@@ -389,6 +508,17 @@ async def test_tools():
     """Test endpoint to verify tools list"""
     try:
         fake_request = MCPRequest(method="tools/list", id="test")
+        response = await mcp_server.handle_request(fake_request)
+        return response
+    except Exception as e:
+        return {"error": str(e)}
+
+# Test endpoint for initialize
+@app.get("/test-init")
+async def test_init():
+    """Test endpoint to verify initialization"""
+    try:
+        fake_request = MCPRequest(method="initialize", id="test-init")
         response = await mcp_server.handle_request(fake_request)
         return response
     except Exception as e:
