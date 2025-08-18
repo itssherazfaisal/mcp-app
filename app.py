@@ -17,7 +17,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from .tools import register_all_tools
+from tools import register_all_tools
 
 # Configure logging
 logging.basicConfig(
