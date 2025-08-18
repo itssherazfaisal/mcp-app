@@ -33,8 +33,26 @@ import sys
 console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setLevel(logging.DEBUG)
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-console_handler.setFormatter(formatter)
-logger.addHandler(console_handler)
+# In-memory log storage for debugging (since we can't access Render logs)
+debug_logs = []
+MAX_DEBUG_LOGS = 100
+
+class DebugLogHandler(logging.Handler):
+    def emit(self, record):
+        debug_logs.append({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "level": record.levelname,
+            "message": record.getMessage(),
+            "function": record.funcName,
+            "line": record.lineno
+        })
+        # Keep only the last MAX_DEBUG_LOGS entries
+        if len(debug_logs) > MAX_DEBUG_LOGS:
+            debug_logs.pop(0)
+
+# Add debug handler to logger
+debug_handler = DebugLogHandler()
+logger.addHandler(debug_handler)
 
 # MCP Protocol Data Structures
 @dataclass
@@ -583,6 +601,23 @@ async def test_tools():
         return response
     except Exception as e:
         return {"error": str(e)}
+
+@app.get("/debug-logs")
+async def get_debug_logs():
+    """Get recent debug logs since we can't access Render logs directly"""
+    return {
+        "logs": debug_logs[-50:],  # Last 50 logs
+        "total_logs": len(debug_logs),
+        "server_uptime": str(datetime.now(timezone.utc) - mcp_server.start_time)
+    }
+
+@app.post("/debug-logs/clear")
+async def clear_debug_logs():
+    """Clear debug logs"""
+    global debug_logs
+    debug_logs.clear()
+    logger.info("🗑️ Debug logs cleared")
+    return {"message": "Debug logs cleared"}
 
 # Debug endpoint to see all requests
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
