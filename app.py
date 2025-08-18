@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 A Python MCP (Model Context Protocol) Server implementation.
-Fixed for Claude API compatibility and proper JSON-RPC 2.0 compliance.
+This server provides tools that can be called by OpenAI's models.
+Fixed for proper JSON-RPC 2.0 compliance.
 """
 
 import json
@@ -16,43 +17,14 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from .tools import register_all_tools
 
-# Configure logging with more detailed output
+# Configure logging
 logging.basicConfig(
-    level=logging.DEBUG,  # More verbose logging
-    format='%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s',
-    handlers=[
-        logging.StreamHandler(),  # Console output
-        logging.FileHandler('mcp_server.log', mode='a')  # File output
-    ]
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-# Also log to stdout for Render
-import sys
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setLevel(logging.DEBUG)
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-# In-memory log storage for debugging (since we can't access Render logs)
-debug_logs = []
-MAX_DEBUG_LOGS = 100
-
-class DebugLogHandler(logging.Handler):
-    def emit(self, record):
-        debug_logs.append({
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "level": record.levelname,
-            "message": record.getMessage(),
-            "function": record.funcName,
-            "line": record.lineno
-        })
-        # Keep only the last MAX_DEBUG_LOGS entries
-        if len(debug_logs) > MAX_DEBUG_LOGS:
-            debug_logs.pop(0)
-
-# Add debug handler to logger
-debug_handler = DebugLogHandler()
-logger.addHandler(debug_handler)
 
 # MCP Protocol Data Structures
 @dataclass
@@ -117,15 +89,21 @@ class MCPServer:
         logger.info(f"Handling MCP request: {request.method} (ID: {request.id})")
         
         try:
-            if request.method == "initialize":
+            # Handle OpenAI method aliases
+            method = request.method
+            if method == "openai.tool_list":
+                method = "tools/list"
+            elif method == "openai.tool_call":
+                method = "tools/call"
+            if method == "initialize":
                 result = await self._handle_initialize(request)
-            elif request.method == "tools/list":
+            elif method == "tools/list":
                 result = await self._handle_tools_list(request)
-            elif request.method == "tools/call":
+            elif method == "tools/call":
                 result = await self._handle_tools_call(request)
-            elif request.method == "resources/list":
+            elif method == "resources/list":
                 result = await self._handle_resources_list(request)
-            elif request.method == "resources/read":
+            elif method == "resources/read":
                 result = await self._handle_resources_read(request)
             else:
                 logger.warning(f"Unknown method: {request.method}")
@@ -243,101 +221,6 @@ class MCPServer:
 # Create the MCP server instance
 mcp_server = MCPServer("ByteGenie", "1.0.0")
 
-# Example tool implementations
-def example_calculator(args: Dict[str, Any]) -> str:
-    """Example calculator tool"""
-    try:
-        operation = args.get('operation', 'add')
-        a = float(args.get('a', 0))
-        b = float(args.get('b', 0))
-        
-        if operation == 'add':
-            result = a + b
-        elif operation == 'subtract':
-            result = a - b
-        elif operation == 'multiply':
-            result = a * b
-        elif operation == 'divide':
-            if b == 0:
-                return "Error: Division by zero"
-            result = a / b
-        else:
-            return f"Error: Unknown operation '{operation}'"
-        
-        return f"Result: {a} {operation} {b} = {result}"
-    except Exception as e:
-        return f"Calculator error: {str(e)}"
-
-def get_current_time(args: Dict[str, Any]) -> str:
-    """Get current time tool"""
-    try:
-        timezone_str = args.get('timezone', 'UTC')
-        now = datetime.now(timezone.utc)
-        return f"Current time: {now.isoformat()}"
-    except Exception as e:
-        return f"Time error: {str(e)}"
-
-def echo_tool(args: Dict[str, Any]) -> str:
-    """Simple echo tool for testing"""
-    message = args.get('message', 'Hello, World!')
-    return f"Echo: {message}"
-
-# Register example tools
-mcp_server.add_tool(
-    name="calculator",
-    description="Perform basic arithmetic operations (add, subtract, multiply, divide)",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "operation": {
-                "type": "string",
-                "enum": ["add", "subtract", "multiply", "divide"],
-                "description": "The arithmetic operation to perform"
-            },
-            "a": {
-                "type": "number",
-                "description": "First number"
-            },
-            "b": {
-                "type": "number", 
-                "description": "Second number"
-            }
-        },
-        "required": ["operation", "a", "b"]
-    },
-    handler=example_calculator
-)
-
-mcp_server.add_tool(
-    name="current_time",
-    description="Get the current time",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "timezone": {
-                "type": "string",
-                "description": "Timezone (default: UTC)"
-            }
-        }
-    },
-    handler=get_current_time
-)
-
-mcp_server.add_tool(
-    name="echo",
-    description="Echo back a message",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "message": {
-                "type": "string",
-                "description": "Message to echo back"
-            }
-        },
-        "required": ["message"]
-    },
-    handler=echo_tool
-)
 
 # Example resource implementations
 def get_server_info() -> str:
@@ -358,17 +241,6 @@ def get_server_info() -> str:
     except Exception as e:
         return f"Server info error: {str(e)}"
 
-def get_sample_data() -> str:
-    """Get some sample data"""
-    data = {
-        "sample_users": [
-            {"id": 1, "name": "Alice", "email": "alice@example.com"},
-            {"id": 2, "name": "Bob", "email": "bob@example.com"}
-        ],
-        "generated_at": datetime.now(timezone.utc).isoformat()
-    }
-    return json.dumps(data, indent=2)
-
 # Register resources
 mcp_server.add_resource(
     uri="server://info",
@@ -377,14 +249,7 @@ mcp_server.add_resource(
     mime_type="application/json",
     handler=get_server_info
 )
-
-mcp_server.add_resource(
-    uri="data://sample",
-    name="Sample Data",
-    description="Sample user data for testing",
-    mime_type="application/json",
-    handler=get_sample_data
-)
+register_all_tools(mcp_server)
 
 # FastAPI app
 app = FastAPI(
@@ -402,68 +267,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    """Log all incoming requests for debugging"""
-    start_time = datetime.now()
-    client_ip = request.client.host if request.client else "unknown"
-    
-    # Log request details
-    logger.info(f"📥 INCOMING REQUEST:")
-    logger.info(f"   Method: {request.method}")
-    logger.info(f"   URL: {request.url}")
-    logger.info(f"   Headers: {dict(request.headers)}")
-    logger.info(f"   Client IP: {client_ip}")
-    
-    # Log request body if it's a POST
-    if request.method == "POST":
-        try:
-            # Read body for logging (FastAPI will handle re-reading)
-            body = await request.body()
-            if body:
-                try:
-                    json_body = json.loads(body.decode())
-                    logger.info(f"   Body (JSON): {json.dumps(json_body, indent=2)}")
-                except:
-                    logger.info(f"   Body (raw): {body.decode()[:500]}...")
-            else:
-                logger.info("   Body: Empty")
-        except Exception as e:
-            logger.error(f"   Body read error: {e}")
-    
-    # Process request
-    response = await call_next(request)
-    
-    # Log response
-    duration = (datetime.now() - start_time).total_seconds() * 1000
-    logger.info(f"📤 OUTGOING RESPONSE:")
-    logger.info(f"   Status: {response.status_code}")
-    logger.info(f"   Duration: {duration:.2f}ms")
-    
-    return response
-
-@app.post("/")
-async def mcp_root_endpoint(request: Request):
-    """Root MCP endpoint - JSON-RPC 2.0 compliant"""
-    logger.info("🎯 ROOT ENDPOINT CALLED")
-    return await mcp_endpoint(request)
-
 @app.post("/mcp")
 async def mcp_endpoint(request: Request):
     """Main MCP endpoint - JSON-RPC 2.0 compliant"""
-    logger.info("🎯 MCP ENDPOINT CALLED")
     start_time = datetime.now()
     client_ip = request.client.host if request.client else "unknown"
     
     try:
         # Parse request body
         body = await request.json()
-        logger.info(f"✅ Successfully parsed JSON body")
-        logger.info(f"📋 Request details: method='{body.get('method')}', id='{body.get('id')}'")
+        logger.info(f"Raw MCP request from {client_ip}: {json.dumps(body, indent=2)}")
         
         # Validate JSON-RPC 2.0 format
         if "jsonrpc" not in body or body["jsonrpc"] != "2.0":
-            logger.error(f"❌ Invalid JSON-RPC version: {body.get('jsonrpc')}")
+            logger.error("Invalid JSON-RPC version")
             return JSONResponse(
                 content={
                     "jsonrpc": "2.0",
@@ -477,7 +294,7 @@ async def mcp_endpoint(request: Request):
             )
         
         if "method" not in body:
-            logger.error("❌ Missing method in request")
+            logger.error("Missing method in request")
             return JSONResponse(
                 content={
                     "jsonrpc": "2.0",
@@ -490,26 +307,20 @@ async def mcp_endpoint(request: Request):
                 status_code=400
             )
         
-        logger.info("✅ JSON-RPC validation passed")
-        
         # Create MCP request object
         mcp_request = MCPRequest(**body)
-        logger.info(f"✅ Created MCPRequest object for method: {mcp_request.method}")
         
         # Handle the request
-        logger.info("🔄 Processing MCP request...")
         response = await mcp_server.handle_request(mcp_request)
-        logger.info("✅ MCP request processed successfully")
         
         # Log successful responses
         duration = (datetime.now() - start_time).total_seconds() * 1000
-        logger.info(f"📊 Response completed in {duration:.2f}ms")
-        logger.info(f"📤 Sending response: {json.dumps(response, indent=2)}")
+        logger.info(f"MCP response sent in {duration:.2f}ms: {json.dumps(response, indent=2)}")
         
         return JSONResponse(content=response)
         
     except json.JSONDecodeError as e:
-        logger.error(f"❌ JSON decode error from {client_ip}: {e}")
+        logger.error(f"JSON decode error from {client_ip}: {e}")
         return JSONResponse(
             content={
                 "jsonrpc": "2.0",
@@ -521,21 +332,8 @@ async def mcp_endpoint(request: Request):
             },
             status_code=400
         )
-    except ValueError as e:
-        logger.error(f"❌ ValueError in MCP processing: {e}")
-        return JSONResponse(
-            content={
-                "jsonrpc": "2.0",
-                "error": {
-                    "code": -32602,
-                    "message": f"Invalid params: {str(e)}"
-                },
-                "id": body.get("id") if 'body' in locals() else None
-            },
-            status_code=400
-        )
     except Exception as e:
-        logger.error(f"❌ Unexpected error processing MCP request from {client_ip}: {e}", exc_info=True)
+        logger.error(f"Error processing MCP request from {client_ip}: {e}", exc_info=True)
         return JSONResponse(
             content={
                 "jsonrpc": "2.0",
@@ -601,51 +399,7 @@ async def test_tools():
         return response
     except Exception as e:
         return {"error": str(e)}
-
-@app.get("/debug-logs")
-async def get_debug_logs():
-    """Get recent debug logs since we can't access Render logs directly"""
-    return {
-        "logs": debug_logs[-50:],  # Last 50 logs
-        "total_logs": len(debug_logs),
-        "server_uptime": str(datetime.now(timezone.utc) - mcp_server.start_time)
-    }
-
-@app.post("/debug-logs/clear")
-async def clear_debug_logs():
-    """Clear debug logs"""
-    global debug_logs
-    debug_logs.clear()
-    logger.info("🗑️ Debug logs cleared")
-    return {"message": "Debug logs cleared"}
-
-# Debug endpoint to see all requests
-@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
-async def catch_all(request: Request, path: str):
-    """Catch all unhandled requests for debugging"""
-    logger.warning(f"🚨 UNHANDLED REQUEST to path: /{path}")
-    logger.warning(f"   Method: {request.method}")
-    logger.warning(f"   Headers: {dict(request.headers)}")
     
-    if request.method == "POST":
-        try:
-            body = await request.json()
-            logger.warning(f"   Body: {json.dumps(body, indent=2)}")
-        except:
-            try:
-                body = await request.body()
-                logger.warning(f"   Body (raw): {body.decode()[:200]}...")
-            except:
-                logger.warning("   Body: Could not read")
-    
-    return JSONResponse(
-        content={
-            "error": f"Path /{path} not found",
-            "available_paths": ["/", "/mcp", "/health", "/ping", "/docs"]
-        },
-        status_code=404
-    )
-
 if __name__ == "__main__":
     # Get configuration from environment
     host = os.getenv("HOST", "0.0.0.0")
